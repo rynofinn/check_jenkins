@@ -1,0 +1,86 @@
+#!/usr/bin/python
+# Copyright 2016, Ryan Finnin Day <rday@finninday.net>
+#
+# nagios service check to determine jenkins queue health
+# based on age of oldest job in queue and number of minions active
+#
+# Usage: check_nagios -w WARNMINUTES -c CRITMINUTES -j JENKINSURL
+#                     -m MAXMINIONS
+#
+# Returns: OK, WARN, or CRITCAL with status, ie:
+# OK - Build queue is empty and 5 minions are active
+
+from optparse import OptionParser
+from datetime import datetime
+import time
+import jenkins
+import os
+import sys
+
+parser = OptionParser()
+parser.add_option("-w", dest="warn", help="warn threshold")
+parser.add_option("-c", dest="crit", help="crit threshold")
+parser.add_option("-j", dest="jenkins_url", help="url of jenkins master")
+parser.add_option("-m", dest="minion_cap", help="max concurrent minions")
+(options, args) = parser.parse_args()
+
+JENKINS_URL = options.jenkins_url
+MINION_CAP = int(options.minion_cap)
+NOWUNIX = int(time.time())
+
+# log in to jenkins master
+jenkins_server = jenkins.Jenkins(JENKINS_URL)
+
+# look at build queue
+queue_info = jenkins_server.get_queue_info()
+oldest = NOWUNIX
+jobcount = len(queue_info)
+
+# get minion list
+nodes = jenkins_server.get_nodes()
+nodecount = len(nodes)
+
+if (nodecount > (MINION_CAP - 5)):
+    allminionsbusy = True
+else:
+    allminionsbusy = False
+
+# get job info
+if not queue_info:
+    print "OK - Build queue is empty and %d minions are active" % nodecount
+    sys.exit(0)
+else:
+    for job in queue_info:
+        # jenkins inQueueSince is a millisecond timestamp
+        # divide by 1000 to compare to standard unix timestamp
+        jobtimestamp = job['inQueueSince']/1000
+        if jobtimestamp < oldest:
+            oldest = jobtimestamp
+            oldjob = job
+
+    minutes = (NOWUNIX - oldest) / 60
+    name = oldjob['task']['name']
+
+    if allminionsbusy:
+        if minutes > int(options.crit):
+            print "CRITICAL - oldest job (%s) is %d minutes old with %d minions active" % (name, minutes, nodecount)
+            sys.exit(2)
+        elif minutes > int(options.warn):
+            print "WARNING - oldest job (%s) is %d minutes old with %d minions active" % (name, minutes, nodecount)
+            sys.exit(1)
+        elif jobcount > MINION_CAP * 5:
+            print "WARNING - job queue is %d and minion cap is %d with %d minions active" % (jobcount, MINION_CAP, nodecount)
+            sys.exit(1)
+        else:
+            print "OK - oldest job (%s) is %d minutes old and queue depth is %d with %d minions active" % (name, minutes, jobcount, nodecount)
+            sys.exit(0)
+
+    # if all minions are not busy...
+    else:
+        if jobcount > MINION_CAP * 5:
+            print "WARNING - job queue is %d and minion cap is %d with %d minions active" % (jobcount, MINION_CAP, nodecount)
+            sys.exit(1)
+        else:
+            print "OK - oldest job (%s) is %d minutes old and queue depth is %d with %d minions active" % (name, minutes, jobcount, nodecount)
+            sys.exit(0)
+
