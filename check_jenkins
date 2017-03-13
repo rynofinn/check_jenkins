@@ -5,7 +5,7 @@
 # based on age of oldest job in queue and number of minions active
 #
 # Usage: check_nagios -w WARNMINUTES -c CRITMINUTES -j JENKINSURL
-#                     -m MAXMINIONS
+#                     -m MAXMINIONS -g MAXMERGEAGE -p MERGEPATTERN
 #
 # Returns: OK, WARN, or CRITCAL with status, ie:
 # OK - Build queue is empty and 5 minions are active
@@ -16,17 +16,22 @@ import time
 import jenkins
 import os
 import sys
+import re
 
 parser = OptionParser()
 parser.add_option("-w", dest="warn", help="warn threshold")
 parser.add_option("-c", dest="crit", help="crit threshold")
 parser.add_option("-j", dest="jenkins_url", help="url of jenkins master")
 parser.add_option("-m", dest="minion_cap", help="max concurrent minions")
+parser.add_option("-g", dest="max_merge_age", help="max merge job duration")
+parser.add_option("-p", dest="merge_job_pattern", help="pattern to match merge job")
 (options, args) = parser.parse_args()
 
 JENKINS_URL = options.jenkins_url
 MINION_CAP = int(options.minion_cap)
 NOWUNIX = int(time.time())
+MAXMERGE = int(options.max_merge_age)
+MERGEPAT = options.merge_job_pattern
 
 # log in to jenkins master
 jenkins_server = jenkins.Jenkins(JENKINS_URL)
@@ -40,12 +45,27 @@ jobcount = len(queue_info)
 nodes = jenkins_server.get_nodes()
 nodecount = len(nodes)
 
+# look through currently running builds to see if any
+# merge jobs are stuck
+builds = jenkins_server.get_running_builds()
+for build in builds:
+  build_name = build['name']
+  build_number = build['number']
+  build_info = jenkins_server.get_build_info(build_name, build_number)
+  build_timestamp = build_info['timestamp']
+  build_elapsed = (NOWUNIX - build_timestamp/1000)/60
+  #print "build %s (%s) running for %d min" % (build_name, build_number, build_elapsed)
+  if re.search(MERGEPAT, build_name):
+    if build_elapsed > MAXMERGE:
+      print "CRITICAL - merge job (%s - %s) has been running %d minutes" % (build_name, build_number, build_elapsed)
+      sys.exit(2)
+
 if (nodecount > (MINION_CAP - 5)):
     allminionsbusy = True
 else:
     allminionsbusy = False
 
-# get job info
+# get pending job info
 if not queue_info:
     print "OK - Build queue is empty and %d minions are active" % nodecount
     sys.exit(0)
@@ -83,4 +103,3 @@ else:
         else:
             print "OK - oldest job (%s) is %d minutes old and queue depth is %d with %d minions active" % (name, minutes, jobcount, nodecount)
             sys.exit(0)
-
